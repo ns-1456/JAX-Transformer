@@ -1,0 +1,38 @@
+# Byte-compiled / __pycache__
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+eggs/
+*.egg-info/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/demo_outputs/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data (optional; remove if you want to track small samples)
+*.npy
+data/
+*.pt
+*.pth
+
+# OS
+.DS_Store
+Thumbs.db
+notebooks/.project_root
