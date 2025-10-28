@@ -88,29 +88,140 @@ def _merge_pair(
     return new_word_freqs
 
 
+def _train_bpe_fast(
+    input_path: str,
+    vocab_size: int,
+    special_tokens: list[str],
+) -> tuple[dict[int, bytes], list[tuple[int, int]]]:
+    """Train BPE using Hugging Face tokenizers (Rust backend). Returns same (vocab, merges) as train_bpe."""
+    import tempfile
+
+    from tokenizers import ByteLevelBPETokenizer
+
+    tok = ByteLevelBPETokenizer(add_prefix_space=False)
+    tok.train(
+        [input_path],
+        vocab_size=vocab_size,
+        min_frequency=0,
+        show_progress=False,
+        special_tokens=special_tokens or [],
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        tok.save_model(tmp, "bpe")
+        with open(f"{tmp}/bpe-vocab.json") as f:
+            import json
+
+            hf_vocab = json.load(f)
+        with open(f"{tmp}/bpe-merges.txt") as f:
+            merge_lines = [line.strip() for line in f if line.strip()]
+
+    # HF vocab.json: usually token_str -> id. Support id_str -> token_str as well.
+    vocab: dict[int, bytes] = {}
+    token_to_id: dict[str, int] = {}
+    for k, v in hf_vocab.items():
+        if isinstance(v, int):
+            token_str, idx = k, v
+            token_to_id[k] = v
+        else:
+            token_str, idx = v, int(k)
+            token_to_id[v] = int(k)
+        try:
+            b = token_str.encode("latin-1")
+        except (UnicodeEncodeError, AttributeError):
+            b = token_str.encode("utf-8") if isinstance(token_str, str) else bytes(token_str)
+        vocab[idx] = b
+
+    if not token_to_id:
+        token_to_id = {v: int(k) for k, v in hf_vocab.items() if isinstance(k, str)}
+    merges: list[tuple[int, int]] = []
+    for line in merge_lines:
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        left, right = parts[0], parts[1]
+        if left in token_to_id and right in token_to_id:
+            merges.append((token_to_id[left], token_to_id[right]))
+    return vocab, merges
+
+
 def train_bpe(
     input_path: str,
     vocab_size: int,
     special_tokens: list[str] | None = None,
+    *,
+    stream_chunk_bytes: int | None = 16 * 1024 * 1024,
+    max_bytes: int | None = None,
+    use_fast: bool = False,
 ) -> tuple[dict[int, bytes], list[tuple[int, int]]]:
     """Train a byte-level BPE tokenizer.
+
+    Uses streaming (chunked) reads when stream_chunk_bytes is set (default 16MB),
+    so the full file is never loaded into RAM. Reduces peak memory for large corpora.
+
+    Args:
+        input_path: Path to text file.
+        vocab_size: Target vocabulary size (bytes + specials + merges).
+        special_tokens: Tokens to add and strip from text before training.
+        stream_chunk_bytes: If set, read file in chunks of this size (bytes). Default 16MB.
+            Set to None to load the entire file (original behavior; can OOM on huge files).
+        max_bytes: If set, only use the first max_bytes of the file for training (subsample).
+        use_fast: If True, use Hugging Face tokenizers (Rust backend) for ~order-of-magnitude
+            faster training when the tokenizers package is installed. Same (vocab, merges) format.
 
     Returns (vocab, merges) where vocab maps token_id -> bytes and
     merges is the ordered list of (id_a, id_b) merge operations.
     """
     special_tokens = special_tokens or []
 
-    with open(input_path, "r", encoding="utf-8") as f:
-        text = f.read()
-
-    for st in special_tokens:
-        text = text.replace(st, "")
-
-    tokens = _pretokenize_parallel(text)
+    if use_fast:
+        try:
+            return _train_bpe_fast(input_path, vocab_size, special_tokens)
+        except Exception:
+            pass
 
     word_freqs: dict[tuple[int, ...], int] = defaultdict(int)
-    for tok in tokens:
-        word_freqs[tuple(tok.encode("utf-8"))] += 1
+
+    if stream_chunk_bytes is None:
+        # Original path: load full file (can use a lot of RAM)
+        with open(input_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        if max_bytes is not None:
+            text = text[:max_bytes]
+        for st in special_tokens:
+            text = text.replace(st, "")
+        tokens = _pretokenize_parallel(text)
+        for tok in tokens:
+            word_freqs[tuple(tok.encode("utf-8"))] += 1
+    else:
+        # Streaming path: process in chunks to keep peak RAM low
+        chunk_size = stream_chunk_bytes
+        total_read = 0
+        with open(input_path, "rb") as f:
+            while True:
+                raw = f.read(chunk_size)
+                if not raw:
+                    break
+                total_read += len(raw)
+                if max_bytes is not None and total_read > max_bytes:
+                    raw = raw[: max_bytes - (total_read - len(raw))]
+                    total_read = max_bytes
+                for i in range(len(raw), max(0, len(raw) - 4), -1):
+                    try:
+                        s = raw[:i].decode("utf-8")
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    s = raw.decode("utf-8", errors="replace")
+                if max_bytes is not None and total_read >= max_bytes:
+                    pass  # last chunk
+                for st in special_tokens:
+                    s = s.replace(st, "")
+                tokens = _pretokenize_chunk(s)
+                for tok in tokens:
+                    word_freqs[tuple(tok.encode("utf-8"))] += 1
+                if max_bytes is not None and total_read >= max_bytes:
+                    break
 
     vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
     merges: list[tuple[int, int]] = []
