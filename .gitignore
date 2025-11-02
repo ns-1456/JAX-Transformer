@@ -26,6 +26,9 @@ env/
 *.swp
 *.swo
 
+# Checkpoints
+checkpoints/
+
 # Data (optional; remove if you want to track small samples)
 *.npy
 data/
