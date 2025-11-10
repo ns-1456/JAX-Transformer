@@ -1,4 +1,4 @@
-"""Training loop for the Transformer LM."""
+"""Training loop for the Transformer LM. Checkpointing and logging."""
 from __future__ import annotations
 
 import argparse
