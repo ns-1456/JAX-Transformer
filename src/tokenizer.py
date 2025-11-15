@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import warnings
 from collections import defaultdict
 from typing import Iterator
 
@@ -88,59 +89,103 @@ def _merge_pair(
     return new_word_freqs
 
 
+def _unicode_to_byte_map() -> dict[str, int]:
+    """Inverse of GPT-2's bytes_to_unicode(): map each Unicode char back to its byte value."""
+    bs = (
+        list(range(ord("!"), ord("~") + 1))
+        + list(range(ord("¡"), ord("¬") + 1))
+        + list(range(ord("®"), ord("ÿ") + 1))
+    )
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return {chr(c): b for b, c in zip(bs, cs)}
+
+
+_UNICODE_TO_BYTE: dict[str, int] | None = None
+
+
+def _get_unicode_to_byte() -> dict[str, int]:
+    global _UNICODE_TO_BYTE
+    if _UNICODE_TO_BYTE is None:
+        _UNICODE_TO_BYTE = _unicode_to_byte_map()
+    return _UNICODE_TO_BYTE
+
+
+def _hf_token_to_bytes(token_str: str) -> bytes:
+    """Convert an HF ByteLevelBPE token string to raw bytes via the GPT-2 mapping."""
+    u2b = _get_unicode_to_byte()
+    return bytes(u2b[c] for c in token_str)
+
+
 def _train_bpe_fast(
     input_path: str,
     vocab_size: int,
     special_tokens: list[str],
+    max_bytes: int | None = None,
 ) -> tuple[dict[int, bytes], list[tuple[int, int]]]:
     """Train BPE using Hugging Face tokenizers (Rust backend). Returns same (vocab, merges) as train_bpe."""
     import tempfile
 
     from tokenizers import ByteLevelBPETokenizer
 
-    tok = ByteLevelBPETokenizer(add_prefix_space=False)
-    tok.train(
-        [input_path],
-        vocab_size=vocab_size,
-        min_frequency=0,
-        show_progress=False,
-        special_tokens=special_tokens or [],
-    )
+    train_path = input_path
+    tmp_input = None
+    if max_bytes is not None:
+        tmp_input = tempfile.NamedTemporaryFile(mode="wb", suffix=".txt", delete=False)
+        with open(input_path, "rb") as src:
+            tmp_input.write(src.read(max_bytes))
+        tmp_input.close()
+        train_path = tmp_input.name
+
+    try:
+        tok = ByteLevelBPETokenizer(add_prefix_space=False)
+        tok.train(
+            [train_path],
+            vocab_size=vocab_size,
+            min_frequency=0,
+            show_progress=False,
+            special_tokens=special_tokens or [],
+        )
+    finally:
+        if tmp_input is not None:
+            os.unlink(tmp_input.name)
+
     with tempfile.TemporaryDirectory() as tmp:
         tok.save_model(tmp, "bpe")
-        with open(f"{tmp}/bpe-vocab.json") as f:
-            import json
-
-            hf_vocab = json.load(f)
         with open(f"{tmp}/bpe-merges.txt") as f:
             merge_lines = [line.strip() for line in f if line.strip()]
 
-    # HF vocab.json: usually token_str -> id. Support id_str -> token_str as well.
-    vocab: dict[int, bytes] = {}
-    token_to_id: dict[str, int] = {}
-    for k, v in hf_vocab.items():
-        if isinstance(v, int):
-            token_str, idx = k, v
-            token_to_id[k] = v
-        else:
-            token_str, idx = v, int(k)
-            token_to_id[v] = int(k)
-        try:
-            b = token_str.encode("latin-1")
-        except (UnicodeEncodeError, AttributeError):
-            b = token_str.encode("utf-8") if isinstance(token_str, str) else bytes(token_str)
-        vocab[idx] = b
+    # Build vocab with our ID convention (byte value == ID for 0..255)
+    # so the encoder's `list(text.encode("utf-8"))` directly yields valid IDs.
+    vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+    for i, st in enumerate(special_tokens or []):
+        vocab[256 + i] = st.encode("utf-8")
 
-    if not token_to_id:
-        token_to_id = {v: int(k) for k, v in hf_vocab.items() if isinstance(k, str)}
+    bytes_to_id: dict[bytes, int] = {v: k for k, v in vocab.items()}
+    next_id = 256 + len(special_tokens or [])
     merges: list[tuple[int, int]] = []
+
     for line in merge_lines:
         parts = line.split(None, 1)
         if len(parts) != 2:
             continue
-        left, right = parts[0], parts[1]
-        if left in token_to_id and right in token_to_id:
-            merges.append((token_to_id[left], token_to_id[right]))
+        left_bytes = _hf_token_to_bytes(parts[0])
+        right_bytes = _hf_token_to_bytes(parts[1])
+        left_id = bytes_to_id.get(left_bytes)
+        right_id = bytes_to_id.get(right_bytes)
+        if left_id is None or right_id is None:
+            continue
+        merged_bytes = left_bytes + right_bytes
+        vocab[next_id] = merged_bytes
+        bytes_to_id[merged_bytes] = next_id
+        merges.append((left_id, right_id))
+        next_id += 1
+
     return vocab, merges
 
 
@@ -175,9 +220,13 @@ def train_bpe(
 
     if use_fast:
         try:
-            return _train_bpe_fast(input_path, vocab_size, special_tokens)
-        except Exception:
-            pass
+            return _train_bpe_fast(input_path, vocab_size, special_tokens, max_bytes=max_bytes)
+        except Exception as exc:
+            warnings.warn(
+                f"Fast BPE (HuggingFace tokenizers) failed: {exc}. "
+                "Falling back to pure-Python training (slower).",
+                stacklevel=2,
+            )
 
     word_freqs: dict[tuple[int, ...], int] = defaultdict(int)
 

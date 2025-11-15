@@ -2,6 +2,12 @@
 
 A complete transformer language model implemented entirely from scratch—byte-level BPE tokenizer, pre-norm Transformer with RoPE and SwiGLU in JAX, hand-written AdamW optimizer, and a fused CUDA attention kernel. Built as a portfolio project following the Stanford CS336 curriculum.
 
+## Speed-run goal
+
+**Primary benchmark:** Train on **TinyStories** on **A100 or H100** with a target of **validation loss ≤ 1.45** (competitive with common TinyStories baselines). The training pipeline should be **efficient**: high tokens/sec, good GPU utilization (MFU), and minimal overhead so the speed run is reproducible and comparable.
+
+**Notebook:** [notebooks/speedrun_tinystories.ipynb](notebooks/speedrun_tinystories.ipynb) — minimal speed-run only (download → BPE → encode → train → plot → generate). See [docs/SPEEDRUN_BENCHMARK.md](docs/SPEEDRUN_BENCHMARK.md) for the full recipe and metrics.
+
 ## Architecture
 
 ```
@@ -66,11 +72,12 @@ Input Text
 pip install -r requirements.txt
 ```
 
-### Demo notebook (train + generate + plots)
+### Notebooks
 
-**Local:** From the repo root, open `notebooks/demo_train_generate.ipynb` and run all cells (kernel cwd = repo root).
+- **Speed-run (TinyStories only):** [notebooks/speedrun_tinystories.ipynb](notebooks/speedrun_tinystories.ipynb) — download → BPE → encode → train (fixed steps or full) → plot → generate. No assignment boilerplate; tune `NUM_STEPS` and `BATCH_SIZE` for your GPU.
+- **Full assignment demo:** [notebooks/demo_train_generate.ipynb](notebooks/demo_train_generate.ipynb) — CS336 A1 coverage (BPE, tokenizer experiments, training, LR/batch experiments, generation).
 
-**Google Colab:** Open [the notebook on Colab](https://colab.research.google.com/github/ns-1456/JAX-XLA-LM/blob/main/notebooks/demo_train_generate.ipynb). The first cell clones this repo and installs dependencies; then run all cells to train a tiny BPE tokenizer and model, plot loss, and generate with KV cache and MLA+DSA.
+**Local:** Run from repo root (kernel cwd = repo root). **Colab:** Clone repo in first cell and install `requirements.txt`.
 
 ### Train tokenizer
 
@@ -145,14 +152,14 @@ project-2-lm-jax/
 
 ## Results
 
-| Metric              | Tiny (4L-128D) | Small (12L-768D) |
-|---------------------|----------------|------------------|
-| Training loss       | —              | —                |
-| Validation perplexity | —            | —                |
-| Tokens/sec (CPU)    | —              | —                |
-| Tokens/sec (GPU)    | —              | —                |
+| Metric                  | Tiny (4L-128D) | Small (12L-768D) | Speed-run target (TinyStories) |
+|-------------------------|----------------|------------------|---------------------------------|
+| Training loss           | —              | —                | —                               |
+| Validation loss         | —              | —                | **≤ 1.45**                      |
+| Validation perplexity   | —              | —                | —                               |
+| Tokens/sec (GPU, A100/H100) | —          | —                | Maximize (efficient)            |
 
-*Fill in after training on your dataset.*
+*Fill in after training. Speed-run: TinyStories on A100/H100, efficient training, val loss ≤ 1.45.*
 
 ## References
 
