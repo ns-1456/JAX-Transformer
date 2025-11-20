@@ -1,4 +1,4 @@
-"""Text generation with KV cache, MLA, and DSA support."""
+"""Text generation with KV cache, MLA, and DSA support. Sampling and KV cache."""
 from __future__ import annotations
 
 import argparse
