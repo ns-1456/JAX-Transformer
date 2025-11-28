@@ -1,4 +1,4 @@
-"""AdamW optimizer implemented from scratch in JAX."""
+"""AdamW optimizer from scratch in JAX. Weight decay applied to params."""
 from __future__ import annotations
 
 from typing import Any, NamedTuple
