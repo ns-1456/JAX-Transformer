@@ -1,4 +1,4 @@
-"""Transformer Language Model in JAX with RoPE, SwiGLU, RMSNorm."""
+"""Transformer LM in JAX: RoPE, SwiGLU, RMSNorm, tied LM head."""
 from __future__ import annotations
 
 from dataclasses import dataclass
